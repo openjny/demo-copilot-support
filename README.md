@@ -88,6 +88,8 @@ gh secret set COPILOT_ASSIGN_TOKEN
 
 その他、`approved` が付かない PR も最終更新から 7 日で自動マージされます（`knowledge/`・`investigations/` のみ変更の場合）。
 
+また、**Issue に `/approve` とコメント**すると、その Issue にひも付く PR をマージして Issue をクローズできます（リポジトリへの書き込み権限を持つユーザーのみ）。
+
 > [!IMPORTANT]
 > `auto-triage` による自動アサインは Copilot を Issue にアサインする GraphQL API を使うため、**ユーザートークン（PAT）が必要**です。リポジトリ Secret `COPILOT_ASSIGN_TOKEN` に PAT を登録してください（既定の `GITHUB_TOKEN` では動作しません）。
 

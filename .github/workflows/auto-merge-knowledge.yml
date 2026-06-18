@@ -2,7 +2,8 @@ name: Auto-merge knowledge PRs
 
 # ナレッジ/調査記録の PR を以下のタイミングで自動マージする:
 #   1. `approved` ラベルが付与されたとき（ユーザーが OK を出した合図）
-#   2. 毎日のスケジュール実行で、最終更新から STALE_DAYS 日以上経過し、
+#   2. Issue に `/approve` コメントが投稿されたとき（書き込み権限者のみ）
+#   3. 毎日のスケジュール実行で、最終更新から STALE_DAYS 日以上経過し、
 #      かつ knowledge/ または investigations/ のみを変更している PR
 #
 # マージ時に PR 本文の `Closes #<issue>` により対象 Issue が自動クローズされる。
@@ -15,6 +16,8 @@ name: Auto-merge knowledge PRs
 on:
   pull_request_target:
     types: [labeled]
+  issue_comment:
+    types: [created]
   schedule:
     - cron: "0 0 * * *" # 毎日 00:00 UTC
   workflow_dispatch:
@@ -22,6 +25,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   # ラベル付与（ユーザー OK）による即時マージ
@@ -39,6 +43,49 @@ jobs:
           gh pr merge "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
             --squash --delete-branch
+
+  # Issue への `/approve` コメントによるマージ（書き込み権限者のみ）
+  merge-on-command:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.comment.body, '/approve') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge PR linked to the issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # Issue を Closes する（ひも付く）OPEN かつ非ドラフトの PR を取得
+          pr_number=$(gh api graphql -f query='
+            query($owner:String!, $repo:String!, $number:Int!) {
+              repository(owner:$owner, name:$repo) {
+                issue(number:$number) {
+                  closedByPullRequestsReferences(first: 10, includeClosedPrs: false) {
+                    nodes { number state isDraft }
+                  }
+                }
+              }
+            }' -f owner="$OWNER" -f repo="$REPO" -F number="$ISSUE_NUMBER" \
+            --jq '[ .data.repository.issue.closedByPullRequestsReferences.nodes[]
+                    | select(.state=="OPEN" and .isDraft==false) ][0].number // empty')
+
+          if [ -z "$pr_number" ]; then
+            gh issue comment "$ISSUE_NUMBER" --repo "$OWNER/$REPO" \
+              --body "⚠️ \`/approve\` を受け取りましたが、マージ可能な（ドラフトでない）関連 PR が見つかりませんでした。"
+            exit 0
+          fi
+
+          echo "Merging PR #$pr_number for issue #$ISSUE_NUMBER"
+          gh pr merge "$pr_number" --repo "$OWNER/$REPO" --squash --delete-branch
+          gh issue comment "$ISSUE_NUMBER" --repo "$OWNER/$REPO" \
+            --body "✅ \`/approve\` により PR #$pr_number をマージしました（\`Closes #$ISSUE_NUMBER\` で本 Issue はクローズされます）。"
 
   # 一定期間放置された PR の自動マージ
   merge-stale:
