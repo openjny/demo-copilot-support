@@ -1,0 +1,59 @@
+name: "問い合わせ"
+description: "IT システムに関する問い合わせ"
+title: "[問い合わせ] "
+labels: ["inquiry"]
+body:
+  - type: dropdown
+    id: category
+    attributes:
+      label: カテゴリ
+      description: 問い合わせの対象カテゴリを選択してください
+      options:
+        - Azure
+        - Microsoft 365
+        - セキュリティ
+        - その他
+    validations:
+      required: true
+
+  - type: input
+    id: service
+    attributes:
+      label: 対象サービス/製品
+      description: 具体的なサービス名や製品名（例：Azure App Service, Entra ID, Exchange Online）
+      placeholder: "例: Azure App Service"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境情報
+      description: 関連する環境情報があれば記載してください
+      placeholder: |
+        - サブスクリプション種別: 
+        - リージョン: 
+        - OS/ブラウザ: 
+        - 発生日時: 
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 詳細
+      description: 問い合わせの詳細を記載してください。エラーメッセージがあれば含めてください。
+      placeholder: |
+        何が起きているか、どのような操作をした際に発生したかを記載してください。
+        エラーメッセージやスクリーンショットがあれば添付してください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する結果
+      description: どのような状態になることを期待していますか？
+      placeholder: "例: App Service が正常にデプロイされ、アクセス可能になること"
+    validations:
+      required: false
