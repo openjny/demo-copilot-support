@@ -36,13 +36,28 @@ jobs:
       - name: Merge approved PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           echo "Merging approved PR #$PR_NUMBER"
-          gh pr merge "$PR_NUMBER" \
-            --repo "$GITHUB_REPOSITORY" \
-            --squash --delete-branch
+          gh pr merge "$PR_NUMBER" --repo "$OWNER/$REPO" --squash --delete-branch
+
+          # キーワードの推定に頼らず、紐付く Issue を明示的にクローズ
+          for i in $(gh api graphql -f query='
+            query($owner:String!, $repo:String!, $pr:Int!) {
+              repository(owner:$owner, name:$repo) {
+                pullRequest(number:$pr) {
+                  closingIssuesReferences(first: 20) { nodes { number state } }
+                }
+              }
+            }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state=="OPEN") | .number'); do
+            echo "Closing linked issue #$i"
+            gh issue close "$i" --repo "$OWNER/$REPO" \
+              --comment "関連 PR #$PR_NUMBER のマージにより対応完了のためクローズします。" || true
+          done
 
   # Issue への `/approve` コメントによるマージ（書き込み権限者のみ）
   merge-on-command:
@@ -84,8 +99,10 @@ jobs:
 
           echo "Merging PR #$pr_number for issue #$ISSUE_NUMBER"
           gh pr merge "$pr_number" --repo "$OWNER/$REPO" --squash --delete-branch
-          gh issue comment "$ISSUE_NUMBER" --repo "$OWNER/$REPO" \
-            --body "✅ \`/approve\` により PR #$pr_number をマージしました（\`Closes #$ISSUE_NUMBER\` で本 Issue はクローズされます）。"
+
+          # キーワード自動クローズに頼らず明示的にクローズ
+          gh issue close "$ISSUE_NUMBER" --repo "$OWNER/$REPO" \
+            --comment "✅ \`/approve\` により PR #$pr_number をマージし、本 Issue をクローズしました。" || true
 
   # 一定期間放置された PR の自動マージ
   merge-stale:
@@ -93,6 +110,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
       STALE_DAYS: "7"
     steps:
       - name: Merge stale knowledge PRs
@@ -132,8 +151,24 @@ jobs:
             fi
 
             echo "Merging stale PR #$number (last updated $updated)"
-            gh pr merge "$number" \
-              --repo "$GITHUB_REPOSITORY" \
-              --squash --delete-branch \
-              || echo "Failed to merge #$number (branch protection or conflicts?)"
+            if gh pr merge "$number" \
+              --repo "$OWNER/$REPO" \
+              --squash --delete-branch; then
+              # キーワードに頼らず紐付く Issue を明示的にクローズ
+              for i in $(gh api graphql -f query='
+                query($owner:String!, $repo:String!, $pr:Int!) {
+                  repository(owner:$owner, name:$repo) {
+                    pullRequest(number:$pr) {
+                      closingIssuesReferences(first: 20) { nodes { number state } }
+                    }
+                  }
+                }' -f owner="$OWNER" -f repo="$REPO" -F pr="$number" \
+                --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[] | select(.state=="OPEN") | .number'); do
+                echo "Closing linked issue #$i"
+                gh issue close "$i" --repo "$OWNER/$REPO" \
+                  --comment "関連 PR #$number の自動マージにより対応完了のためクローズします。" || true
+              done
+            else
+              echo "Failed to merge #$number (branch protection or conflicts?)"
+            fi
           done
