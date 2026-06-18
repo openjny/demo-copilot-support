@@ -1,0 +1,95 @@
+name: Auto-triage with Copilot
+
+# Issue に `auto-triage` ラベルが付与されたら、GitHub Copilot cloud agent を
+# その Issue にアサインして自動対応を開始させる。
+#
+# 仕組み:
+#   1. リポジトリの suggestedActors から Copilot coding agent (copilot-swe-agent) の Bot ID を取得
+#   2. Issue の global node ID を取得
+#   3. addAssigneesToAssignable で Copilot をアサイン → cloud agent が起動
+#
+# 前提（重要）:
+# - Copilot を Issue にアサインする GraphQL API は「ユーザートークン」でのみ動作する。
+#   既定の GITHUB_TOKEN（サーバー間トークン）では動作しないため、PAT を
+#   リポジトリ Secret `COPILOT_ASSIGN_TOKEN` に設定すること。
+#   必要スコープ（fine-grained）: metadata=read, issues/pull_requests/contents/actions=read&write
+#   （classic PAT の場合は `repo` スコープ）
+# - リポジトリで Copilot coding agent が有効化されていること。
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  assign-copilot:
+    if: github.event.label.name == 'auto-triage'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign issue to Copilot cloud agent
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::Secret COPILOT_ASSIGN_TOKEN が未設定です。PAT を登録してください。"
+            exit 1
+          fi
+
+          # 1. Copilot coding agent の Bot ID を取得
+          bot_id=$(gh api graphql -f query='
+            query($owner:String!, $repo:String!) {
+              repository(owner:$owner, name:$repo) {
+                suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+                  nodes {
+                    login
+                    __typename
+                    ... on Bot { id }
+                    ... on User { id }
+                  }
+                }
+              }
+            }' -f owner="$OWNER" -f repo="$REPO" \
+            --jq '.data.repository.suggestedActors.nodes[]
+                  | select(.login=="copilot-swe-agent") | .id')
+
+          if [ -z "$bot_id" ]; then
+            echo "::error::Copilot coding agent が利用できません（copilot-swe-agent が suggestedActors に存在しない）。リポジトリで Copilot coding agent が有効か確認してください。"
+            exit 1
+          fi
+
+          # 2. Issue の global node ID を取得
+          issue_id=$(gh api graphql -f query='
+            query($owner:String!, $repo:String!, $number:Int!) {
+              repository(owner:$owner, name:$repo) {
+                issue(number:$number) { id }
+              }
+            }' -f owner="$OWNER" -f repo="$REPO" -F number="$ISSUE_NUMBER" \
+            --jq '.data.repository.issue.id')
+
+          # 3. Copilot を Issue にアサイン（既存アサインは維持）→ cloud agent が起動
+          gh api graphql \
+            -H 'GraphQL-Features: issues_copilot_assignment_api_support,coding_agent_model_selection' \
+            -f query='
+            mutation($assignableId:ID!, $assigneeIds:[ID!]!) {
+              addAssigneesToAssignable(input: {
+                assignableId: $assignableId,
+                assigneeIds: $assigneeIds
+              }) {
+                assignable {
+                  ... on Issue {
+                    number
+                    assignees(first: 10) { nodes { login } }
+                  }
+                }
+              }
+            }' -f assignableId="$issue_id" -f assigneeIds="$bot_id"
+
+          echo "Copilot cloud agent を Issue #$ISSUE_NUMBER にアサインしました。"

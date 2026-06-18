@@ -1,0 +1,92 @@
+name: Auto-merge knowledge PRs
+
+# ナレッジ/調査記録の PR を以下のタイミングで自動マージする:
+#   1. `approved` ラベルが付与されたとき（ユーザーが OK を出した合図）
+#   2. 毎日のスケジュール実行で、最終更新から STALE_DAYS 日以上経過し、
+#      かつ knowledge/ または investigations/ のみを変更している PR
+#
+# マージ時に PR 本文の `Closes #<issue>` により対象 Issue が自動クローズされる。
+#
+# 注意:
+# - ブランチ保護で必須レビュー/必須チェックを設定している場合、既定の
+#   GITHUB_TOKEN ではマージできないことがある。その場合は保護ルールを調整するか
+#   専用トークンを使用すること。
+
+on:
+  pull_request_target:
+    types: [labeled]
+  schedule:
+    - cron: "0 0 * * *" # 毎日 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ラベル付与（ユーザー OK）による即時マージ
+  merge-on-approval:
+    if: github.event_name == 'pull_request_target' && github.event.label.name == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge approved PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          echo "Merging approved PR #$PR_NUMBER"
+          gh pr merge "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --squash --delete-branch
+
+  # 一定期間放置された PR の自動マージ
+  merge-stale:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      STALE_DAYS: "7"
+    steps:
+      - name: Merge stale knowledge PRs
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d "${STALE_DAYS} days ago" +%s)
+
+          prs=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 100 \
+            --json number,updatedAt,isDraft,files)
+
+          echo "$prs" | jq -c '.[]' | while read -r pr; do
+            number=$(echo "$pr" | jq -r '.number')
+            updated=$(echo "$pr" | jq -r '.updatedAt')
+            is_draft=$(echo "$pr" | jq -r '.isDraft')
+            updated_epoch=$(date -u -d "$updated" +%s)
+
+            # knowledge/ または investigations/ 以外を変更している PR は対象外
+            outside=$(echo "$pr" | jq -r '
+              [ .files[].path
+                | select((startswith("knowledge/") or startswith("investigations/")) | not)
+              ] | length')
+
+            if [ "$is_draft" = "true" ]; then
+              echo "Skip #$number (draft)"
+              continue
+            fi
+            if [ "$outside" -ne 0 ]; then
+              echo "Skip #$number (touches files outside knowledge/ or investigations/)"
+              continue
+            fi
+            if [ "$updated_epoch" -gt "$cutoff" ]; then
+              echo "Skip #$number (updated $updated, not stale yet)"
+              continue
+            fi
+
+            echo "Merging stale PR #$number (last updated $updated)"
+            gh pr merge "$number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --squash --delete-branch \
+              || echo "Failed to merge #$number (branch protection or conflicts?)"
+          done

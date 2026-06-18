@@ -7,18 +7,21 @@ GitHub Copilot Coding Agent を活用した IT サポート問い合わせ自動
 IT システムの問い合わせ対応を GitHub Issue + Copilot Coding Agent で自動化するワークフローを実演します。
 
 ```
-Issue（問い合わせ） → Copilot 調査 → ナレッジ蓄積 → Issue 回答
+Issue（問い合わせ） → auto-triage ラベル付与 → Copilot 調査 → ナレッジ蓄積（PR） → Issue 回答 → PR マージで Issue 自動クローズ
 ```
 
 ### ワークフロー
 
 ```mermaid
 flowchart LR
-    A[ユーザーが Issue 作成] --> B[Copilot Coding Agent 起動]
+    A[ユーザーが Issue 作成] --> L[auto-triage ラベル付与]
+    L --> B[Copilot Coding Agent 起動]
     B --> C[既存ナレッジ検索]
     C --> D[Microsoft Learn MCP で調査]
-    D --> E[ナレッジ文書作成/更新]
+    D --> E[ナレッジ文書作成/更新・PR 作成]
     E --> F[Issue にコメントで回答]
+    F --> G{approved ラベル or 7日放置}
+    G --> H[PR 自動マージ → Issue 自動クローズ]
 ```
 
 ## 特徴
@@ -54,13 +57,39 @@ git clone https://github.com/openjny/demo-copilot-support.git
 
 `.vscode/mcp.json` が含まれているため、VS Code で開けば Microsoft Learn MCP が自動的に有効になります。
 
+### 4. 自動化のためのラベルとシークレット
+
+```bash
+# ラベル作成（auto-triage: Copilot 自動起動 / approved: PR 自動マージ）
+gh label create auto-triage --description "Copilot cloud agent に自動対応させる" --color 1d76db
+gh label create approved --description "内容OK: PRを自動マージ対象にする" --color 0e8a16
+
+# Copilot を Issue にアサインするための PAT を Secret に登録
+#   fine-grained PAT スコープ: metadata=read, issues/pull_requests/contents/actions=read&write
+#   classic PAT の場合: repo スコープ
+gh secret set COPILOT_ASSIGN_TOKEN
+```
+
 ## デモシナリオ例
 
 1. Issue テンプレート「問い合わせ」を使って Issue を作成
    - 例:「Azure App Service で 503 エラーが頻発する」
-2. Copilot Coding Agent を Issue にアサイン
-3. Agent が自動で調査を開始し、ナレッジ文書を作成
+2. Issue に `auto-triage` ラベルを付与（Copilot cloud agent が自動でアサインされ起動）
+3. Agent が自動で調査を開始し、ナレッジ文書を作成して PR を作成
 4. Issue に調査結果と対応方法をコメント
+5. 内容に OK なら PR に `approved` ラベルを付与してマージ（`Closes #<issue>` で Issue が自動クローズ）
+
+## ラベルと自動化
+
+| ラベル | 付与対象 | 動作 |
+|---|---|---|
+| `auto-triage` | Issue | Copilot cloud agent をアサインし調査を開始（`.github/workflows/auto-triage.yml`） |
+| `approved` | PR | PR を即マージ（`.github/workflows/auto-merge-knowledge.yml`） |
+
+その他、`approved` が付かない PR も最終更新から 7 日で自動マージされます（`knowledge/`・`investigations/` のみ変更の場合）。
+
+> [!IMPORTANT]
+> `auto-triage` による自動アサインは Copilot を Issue にアサインする GraphQL API を使うため、**ユーザートークン（PAT）が必要**です。リポジトリ Secret `COPILOT_ASSIGN_TOKEN` に PAT を登録してください（既定の `GITHUB_TOKEN` では動作しません）。
 
 ## ファイル構造
 
@@ -69,6 +98,9 @@ git clone https://github.com/openjny/demo-copilot-support.git
   copilot-instructions.md   — Copilot Coding Agent への指示
   agents/support.agent.md   — サポートエージェント定義
   ISSUE_TEMPLATE/inquiry.yml — 問い合わせテンプレート
+  workflows/
+    auto-triage.yml         — auto-triage ラベルで Copilot を自動アサイン
+    auto-merge-knowledge.yml — approved ラベル/7日放置で PR を自動マージ
 .vscode/mcp.json            — Microsoft Learn MCP 設定（ローカル用）
 knowledge/                  — 再利用可能なナレッジベース
   azure/                    — Azure 関連
